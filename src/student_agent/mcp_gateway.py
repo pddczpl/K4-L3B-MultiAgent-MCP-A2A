@@ -16,15 +16,34 @@ class EvidenceGateway:
     def __init__(self, session: ClientSession, contracts: Contracts) -> None:
         self._session = session
         self._contracts = contracts
+        self._tool_specs: list[dict[str, Any]] | None = None
+
+    async def describe_tools(self) -> list[dict[str, Any]]:
+        """Return MCP tool metadata so the coordinator never guesses arguments."""
+        if self._tool_specs is None:
+            response = await self._session.list_tools()
+            self._tool_specs = [
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_schema": getattr(tool, "inputSchema", None)
+                    or getattr(tool, "input_schema", {}),
+                }
+                for tool in response.tools
+            ]
+            self._tool_specs.sort(key=lambda item: item["name"])
+        return self._tool_specs
 
     async def list_tools(self) -> list[str]:
-        response = await self._session.list_tools()
-        return sorted(tool.name for tool in response.tools)
+        return [tool["name"] for tool in await self.describe_tools()]
+
+    def validate_output(self, output: dict[str, Any], source: str) -> None:
+        self._contracts.validate_output(output, source)
 
     async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> dict[str, Any]:
         payload = {"case_id": case_id, **arguments}
         result = await self._session.call_tool(tool_name, arguments=payload)
-        if result.isError:
+        if getattr(result, "isError", getattr(result, "is_error", False)):
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )

@@ -32,6 +32,20 @@ pytest -q
 day09 --help
 ```
 
+### Cài hai model local dưới 10B
+
+Workflow dùng OpenAI-compatible API, mặc định là Ollama. Model chính
+`Qwen3.5-9B` điều phối và tổng hợp; `Qwen3-8B` làm verifier độc lập.
+
+```bash
+ollama pull qwen3.5:9b
+ollama pull qwen3:8b
+```
+
+Giữ các biến mặc định trong `.env.example` khi Ollama chạy tại
+`http://127.0.0.1:11434`. Nếu dùng vLLM hoặc dịch vụ tương thích OpenAI, đổi
+`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_PRIMARY_MODEL` và `LLM_VERIFIER_MODEL`.
+
 ## 2. Đăng ký team
 
 1. Mở `/register` trên Competition Workspace.
