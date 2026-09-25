@@ -6,6 +6,9 @@ import json
 import sys
 from pathlib import Path
 
+import httpx2
+
+from . import VARIANT_ID
 from .cases import load_case_set
 from .config import Settings
 from .contracts import Contracts
@@ -40,24 +43,57 @@ async def _run(root: Path) -> None:
     trace_path.unlink(missing_ok=True)
     trace = TraceWriter(trace_path, contracts)
 
+    # Confirm active competition run to ensure MCP provenance audit validity
+    async with httpx2.AsyncClient() as client:
+        try:
+            run_resp = await client.post(
+                f"{settings.competition_api_url}/api/v2/runs",
+                headers={
+                    "Authorization": f"Bearer {settings.team_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"variant_id": VARIANT_ID},
+                timeout=10.0,
+            )
+            if run_resp.status_code in (200, 201):
+                exp = run_resp.json().get("expires_at", "")
+                print(f"Competition run confirmed active (expires_at: {exp})")
+        except Exception as exc:
+            print(f"Notice: unable to reach runs endpoint: {exc}")
+
     async with connect_gateway(settings.mcp_endpoint, settings.team_api_key, contracts) as gateway:
         discovered_tools = await gateway.list_tools()
         if not discovered_tools:
             raise RuntimeError("MCP Gateway returned no tools")
-        for case_id in case_set.case_ids:
+        total_cases = len(case_set.case_ids)
+        for index, case_id in enumerate(case_set.case_ids, start=1):
             case = case_set.cases[case_id]
-            trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
-            output = await solve_case(case, gateway, trace)
-            contracts.validate_output(output, f"outputs/{case_id}.json")
-            if output.get("case_id") != case_id:
-                raise ValueError(f"solver returned a mismatched case_id for {case_id}")
-            target = output_root / f"{case_id}.json"
-            temporary = target.with_suffix(".json.tmp")
-            temporary.write_text(
-                json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            temporary.replace(target)
-            trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
+            for attempt in range(3):
+                try:
+                    trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
+                    output = await solve_case(case, gateway, trace)
+                    contracts.validate_output(output, f"outputs/{case_id}.json")
+                    if output.get("case_id") != case_id:
+                        raise ValueError(f"solver returned a mismatched case_id for {case_id}")
+                    target = output_root / f"{case_id}.json"
+                    temporary = target.with_suffix(".json.tmp")
+                    temporary.write_text(
+                        json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                    )
+                    temporary.replace(target)
+                    trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
+                    print(f"[{index:03d}/{total_cases:03d}] {case_id} processed successfully")
+                    break
+                except Exception as exc:
+                    if attempt == 2:
+                        raise
+                    print(f"[{index:03d}/{total_cases:03d}] {case_id} retrying (attempt {attempt + 1}) due to: {exc}")
+                    try:
+                        await gateway.connect()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2.0 * (attempt + 1))
+            await asyncio.sleep(0.05)
 
 
 def parser() -> argparse.ArgumentParser:
